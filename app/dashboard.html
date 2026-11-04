@@ -49,7 +49,7 @@
         segments = data.segments;
         var body = document.getElementById("rows");
         body.innerHTML = "";
-        rows.forEach(function (row) {
+        segments.forEach(function (row) {
           var tr = document.createElement("tr");
           if (row.id === pick) tr.className = "on";
           tr.innerHTML = "<td>" + row.label + "</td><td>" + row.return_rate + "</td><td>"
@@ -57,10 +57,12 @@
           tr.onclick = function () { open(row.id); };
           body.appendChild(tr);
         });
-        if (!pick && rows.length) {
-          var focus = rows.filter(function (r) { return r.slug === "lapsed_family"; })[0] || rows[0];
+        if (!pick && segments.length) {
+          var focus = segments.filter(function (r) { return r.slug === "lapsed_family"; })[0] || segments[0];
           open(focus.id);
         }
+      }).catch(function () {
+        document.getElementById("circuit").textContent = "Could not load /segments. Is uvicorn running on port 8002?";
       });
     }
     function open(id) {
