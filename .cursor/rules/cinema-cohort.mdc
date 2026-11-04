@@ -1,0 +1,18 @@
+---
+description: Cinema cohort demo scope, synthetic data, cost rule
+alwaysApply: true
+---
+
+# Cinema cohort demo
+
+Read `PROJECT.md` before changing scope. It is the plan.
+
+- Movie theatre return-rate and segment demo. Success metric is return rate and focused marketing.
+- Synthetic customers and visits only. No real POS or chain data.
+- Workflow: ingest visits → segment → patterns → campaign draft → human accept or edit.
+- Not a full ticketing system, ad platform, or black-box recommender.
+- Stack: FastAPI, simple UI, SQLite, optional one JSON LLM call.
+- Finish on this Mac. Do not deploy until Mert asks.
+- Small diffs, low token use, explainable code.
+- Before finished: warn Mert, then follow PROJECT.md cleanup; keep cost-approval rule.
+- Any action that can cost Mert money must stop first. State the amount, then ask exactly: "This will cost you this amount. Do you approve this action?" Do not continue until he says yes.

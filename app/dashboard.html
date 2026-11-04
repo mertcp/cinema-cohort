@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cinema cohort</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: Roboto, sans-serif; margin: 0; background: #f8f9fa; color: #202124; }
+    header { background: #fff; padding: 16px 24px; border-bottom: 1px solid #dadce0; }
+    h1 { font-size: 22px; font-weight: 400; margin: 0; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(60,64,67,.2); padding: 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { text-align: left; color: #5f6368; font-size: 12px; padding: 8px; border-bottom: 1px solid #eee; }
+    td { padding: 10px 8px; border-bottom: 1px solid #f1f3f4; cursor: pointer; }
+    tr:hover td { background: #f1f3f4; }
+    tr.on td { background: #e8f0fe; }
+    button { background: #1a73e8; color: #fff; border: none; border-radius: 999px; padding: 8px 18px; font: inherit; cursor: pointer; }
+    button.ghost { background: transparent; color: #1a73e8; }
+    .muted { color: #5f6368; font-size: 13px; }
+    textarea { width: 100%; min-height: 80px; margin: 10px 0; padding: 10px; border-radius: 8px; border: 1px solid #dadce0; font: inherit; }
+    .bar { height: 6px; background: #1a73e8; border-radius: 99px; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <header><h1>North Star Cinemas · cohort demo</h1></header>
+  <div class="wrap">
+    <p class="muted">Segments ranked by return rate (lowest first). Click a row — campaign drafts automatically.</p>
+    <main>
+      <section class="card">
+        <h2>Segments</h2>
+        <table>
+          <thead><tr><th>Segment</th><th>Return</th><th>Visits/yr</th><th>Genre</th><th>Members</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </section>
+      <section class="card" id="detail"><p class="muted">Select a segment.</p></section>
+    </main>
+  </div>
+  <script>
+    var segments = [], pick = null;
+    function load() {
+      fetch("/segments").then(function (r) { return r.json(); }).then(function (rows) {
+        segments = rows;
+        var body = document.getElementById("rows");
+        body.innerHTML = "";
+        rows.forEach(function (row) {
+          var tr = document.createElement("tr");
+          if (row.id === pick) tr.className = "on";
+          tr.innerHTML = "<td>" + row.label + "</td><td>" + row.return_rate + "</td><td>"
+            + row.visits_per_year + "</td><td>" + row.top_genre + "</td><td>" + row.member_count + "</td>";
+          tr.onclick = function () { open(row.id); };
+          body.appendChild(tr);
+        });
+        if (!pick && rows.length) {
+          var focus = rows.filter(function (r) { return r.slug === "lapsed_family"; })[0] || rows[0];
+          open(focus.id);
+        }
+      });
+    }
+    function open(id) {
+      pick = id;
+      load();
+      fetch("/segments/" + id).then(function (r) { return r.json(); }).then(function (seg) {
+        if (seg.campaigns.length) { draw(seg); return; }
+        fetch("/segments/" + id + "/campaign", { method: "POST" }).then(function () {
+          fetch("/segments/" + id).then(function (r) { return r.json(); }).then(draw);
+        });
+      });
+    }
+    function bars(title, counts) {
+      var keys = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+      var max = keys.reduce(function (m, k) { return Math.max(m, counts[k]); }, 1);
+      var html = "<h3>" + title + "</h3>";
+      keys.slice(0, 6).forEach(function (k) {
+        html += "<div class=\"muted\">" + k + " · " + counts[k] + "</div><div class=\"bar\" style=\"width:"
+          + (100 * counts[k] / max) + "%\"></div>";
+      });
+      return html;
+    }
+    function draw(seg) {
+      var c = seg.campaigns[seg.campaigns.length - 1];
+      document.getElementById("detail").innerHTML =
+        "<h2>" + seg.label + "</h2>"
+        + "<p>" + c.action + "</p><p class=\"muted\">" + c.channel + " · lift " + c.expected_lift + " · " + c.status + "</p>"
+        + "<textarea id=\"edit\">" + c.action + "</textarea>"
+        + "<button id=\"ok\">Accept</button> <button class=\"ghost\" id=\"save\">Save edit</button>"
+        + "<p class=\"muted\">" + seg.formula + "</p>"
+        + bars("Genres", seg.genre_counts) + bars("Months", seg.month_counts);
+      document.getElementById("ok").onclick = function () { decide(c.id, "accepted", null); };
+      document.getElementById("save").onclick = function () { decide(c.id, "edited", document.getElementById("edit").value); };
+    }
+    function decide(id, status, text) {
+      fetch("/campaigns/" + id + "/decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: status, edited_action: text })
+      }).then(function () { open(pick); });
+    }
+    load();
+  </script>
+</body>
+</html>
