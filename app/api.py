@@ -15,7 +15,7 @@ from app.campaign import draft
 from app.db import create_tables, get_session
 from app.models import CampaignDraft, Customer, Segment, Theatre, Visit
 from app.seed import seed
-from app.segments import assign_segment, segment_stats
+from app.segments import assign_segment, circuit_return_rate, rule_for_slug, segment_stats
 
 app = FastAPI(title="Cinema cohort demo", version="0.1.0")
 
@@ -93,7 +93,11 @@ def list_segments(session: Session = Depends(session_scope)):
     segments = session.query(Segment).all()
     rows = [_segment_row(s) for s in segments]
     rows.sort(key=lambda r: (r["return_rate"], -r["member_count"]))
-    return rows
+    return {
+        "circuit_return_rate": circuit_return_rate(segments),
+        "theatre_count": session.query(Theatre).count(),
+        "segments": rows,
+    }
 
 
 @app.get("/segments/{segment_id}")
@@ -106,6 +110,7 @@ def segment_detail(segment_id: int, session: Session = Depends(session_scope)):
         for visit in customer.visits:
             genres[visit.genre] = genres.get(visit.genre, 0) + 1
             months[visit.visited_on.month] = months.get(visit.visited_on.month, 0) + 1
+    body["segment_rule"] = rule_for_slug(segment.slug)
     body["genre_counts"] = genres
     body["month_counts"] = months
     body["campaigns"] = [
@@ -120,6 +125,31 @@ def segment_detail(segment_id: int, session: Session = Depends(session_scope)):
         for c in segment.campaigns
     ]
     return body
+
+
+@app.get("/segments/{segment_id}/evidence")
+def segment_evidence(segment_id: int, session: Session = Depends(session_scope)):
+    segment = _one_segment(session, segment_id)
+    campaign = segment.campaigns[-1] if segment.campaigns else None
+    return {
+        "segment": segment.label,
+        "slug": segment.slug,
+        "rule": rule_for_slug(segment.slug),
+        "return_rate": segment.return_rate,
+        "circuit_return_rate": circuit_return_rate(session.query(Segment).all()),
+        "visits_per_year": segment.visits_per_year,
+        "top_genre": segment.top_genre,
+        "peak_month": segment.peak_month,
+        "member_count": segment.member_count,
+        "campaign": None
+        if campaign is None
+        else {
+            "action": campaign.edited_action or campaign.action,
+            "channel": campaign.channel,
+            "expected_lift": campaign.expected_lift,
+            "status": campaign.status,
+        },
+    }
 
 
 @app.post("/visits")

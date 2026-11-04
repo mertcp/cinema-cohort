@@ -14,10 +14,17 @@ Open http://127.0.0.1:8002/ — **Lapsed family** opens first; campaign drafts o
 
 ## API
 
-- `GET /segments` — ranked by return rate (lowest first)
+- `GET /segments` — circuit return rate + segments (lowest first)
 - `GET /segments/{id}` — genre/month counts + campaigns
 - `POST /visits` — ingest a visit
 - `POST /segments/{id}/campaign` — draft campaign
 - `POST /campaigns/{id}/decision` — accept / edit
+- `GET /segments/{id}/evidence` — marketing evidence JSON
+
+```bash
+curl -s http://127.0.0.1:8002/segments | python3 -m json.tool | head -20
+curl -s -X POST http://127.0.0.1:8002/visits -H 'content-type: application/json' \
+  -d '{"customer_code":"P-10042","theatre_id":1,"visited_on":"2026-11-01","genre":"animation"}'
+```
 
 Synthetic data only. See [PROJECT.md](PROJECT.md).

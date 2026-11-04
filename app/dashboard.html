@@ -26,7 +26,7 @@
 <body>
   <header><h1>North Star Cinemas · cohort demo</h1></header>
   <div class="wrap">
-    <p class="muted">Segments ranked by return rate (lowest first). Click a row — campaign drafts automatically.</p>
+    <p class="muted" id="circuit">Segments ranked by return rate (lowest first). Click a row — campaign drafts automatically.</p>
     <main>
       <section class="card">
         <h2>Segments</h2>
@@ -41,8 +41,11 @@
   <script>
     var segments = [], pick = null;
     function load() {
-      fetch("/segments").then(function (r) { return r.json(); }).then(function (rows) {
-        segments = rows;
+      fetch("/segments").then(function (r) { return r.json(); }).then(function (data) {
+        document.getElementById("circuit").textContent =
+          "Circuit return rate " + data.circuit_return_rate + " · " + data.theatre_count
+          + " theatres · lowest segments first.";
+        segments = data.segments;
         var body = document.getElementById("rows");
         body.innerHTML = "";
         rows.forEach(function (row) {
@@ -87,7 +90,9 @@
         + "<textarea id=\"edit\">" + c.action + "</textarea>"
         + "<button id=\"ok\">Accept</button> <button class=\"ghost\" id=\"save\">Save edit</button>"
         + "<p class=\"muted\">" + seg.formula + "</p>"
-        + bars("Genres", seg.genre_counts) + bars("Months", seg.month_counts);
+        + "<p class=\"muted\"><strong>Rule:</strong> " + seg.segment_rule + "</p>"
+        + bars("Genres", seg.genre_counts) + bars("Months", seg.month_counts)
+        + "<p><a class=\"link\" href=\"/segments/" + seg.id + "/evidence\" target=\"_blank\">Evidence JSON</a></p>";
       document.getElementById("ok").onclick = function () { decide(c.id, "accepted", null); };
       document.getElementById("save").onclick = function () { decide(c.id, "edited", document.getElementById("edit").value); };
     }

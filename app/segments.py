@@ -5,6 +5,18 @@ from datetime import date, timedelta
 
 GENRES = ("action", "comedy", "drama", "horror", "animation", "documentary")
 
+SEGMENT_RULES = {
+    "lapsed_family": "One family-style visit (animation/comedy), last visit 90+ days ago.",
+    "high_freq_action": "About six or more visits per year, mostly action.",
+    "horror_autumn": "Two or more horror visits, at least one in September or October.",
+    "at_risk": "Low frequency and last visit 120+ days ago.",
+    "steady_mixed": "Everyone else with a mixed pattern.",
+}
+
+
+def rule_for_slug(slug: str) -> str:
+    return SEGMENT_RULES.get(slug, "Assigned from visit history.")
+
 
 def assign_segment(visits, today: date):
     """Rule buckets a recruiter can repeat aloud."""
@@ -52,6 +64,14 @@ def return_rate_for_members(customers, today: date, window_days=90):
     if eligible == 0:
         return 0.0
     return round(returned / eligible, 3)
+
+
+def circuit_return_rate(segments) -> float:
+    total = sum(s.member_count for s in segments)
+    if total == 0:
+        return 0.0
+    weighted = sum(s.return_rate * s.member_count for s in segments)
+    return round(weighted / total, 3)
 
 
 def segment_stats(customers, today: date):
