@@ -104,5 +104,5 @@ Any action that can cost money must stop first. State the amount, then ask exact
 
 1. **Product name on CV** (Cinema cohort, ReelReturn, ShowSegment, …).
 2. **Segment method for v1:** fixed rule buckets vs k-means on (visits/year, genre entropy, recency).
-3. **Chain fiction name** (e.g. North Star Cinemas).
+3. **Chain fiction name** (e.g. Lynch Boulevard Cinemas).
 4. **Public repo name** on `mertcp` — default `cinema-cohort`.

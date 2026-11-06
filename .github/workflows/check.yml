@@ -19,6 +19,25 @@ jobs:
           c = TestClient(app)
           assert c.get("/health").json()["status"] == "ok"
           rows = c.get("/segments").json()["segments"]
-          lf = next(r for r in rows if r["slug"] == "lapsed_family")
-          assert lf["return_rate"] < 0.4
+          assert len(rows) == 6
+          slugs = {r["slug"] for r in rows}
+          assert slugs == {
+              "age_kids", "age_teens", "age_young_adults",
+              "age_adults", "age_seniors", "family_moviegoing",
+          }
+          grp = next(r for r in rows if r["slug"] == "family_moviegoing")
+          assert grp["return_rate"] < 0.4
+          m = c.get("/customers/map").json()
+          assert m["count"] == 200
+          assert len(m["points"]) == 200
+          assert all(p["borough"] and p["postcode"] for p in m["points"])
+          th = c.get("/theatres/map").json()
+          assert th["count"] == 9
+          assert all(t["screen_count"] and t["seat_capacity"] for t in th["theatres"])
+          costs = c.get("/costs/table?mode=all").json()
+          assert set(costs["sources"]) == {"marketing", "fnb", "staff", "utilities", "other"}
+          assert len(costs["month_rows"]) == 12
+          row0 = costs["month_rows"][0]
+          for key in ("marketing", "fnb", "staff", "utilities", "other"):
+              assert key in row0
           PY

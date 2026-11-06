@@ -6,18 +6,39 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
-from app.campaign import draft
+from app.campaign import campaign_suggestions, draft
+from app.cost_db import SessionMarketing, SessionOther
+from app.costs import (
+    build_cost_table,
+    create_cost_stores,
+    read_segment_marketing,
+    seed_cost_stores_if_empty,
+    upsert_other_monthly,
+    upsert_segment_marketing,
+    future_month_keys,
+)
 from app.db import create_tables, get_session
 from app.models import CampaignDraft, Customer, Segment, Theatre, Visit
 from app.seed import seed
-from app.segments import assign_segment, circuit_return_rate, rule_for_slug, segment_stats
+from app.segments import assign_segment, circuit_return_rate, segment_stats, table_label_for_slug, target_profile
 
 app = FastAPI(title="Cinema cohort demo", version="0.1.0")
+
+_NO_STORE = "no-cache, no-store, must-revalidate"
+
+
+@app.middleware("http")
+async def api_no_cache(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith(("/segments", "/theatres", "/customers", "/campaigns", "/costs")):
+        response.headers["Cache-Control"] = _NO_STORE
+    return response
 
 
 def session_scope():
@@ -31,10 +52,12 @@ def session_scope():
 @app.on_event("startup")
 def startup():
     create_tables()
+    create_cost_stores()
     session = get_session()
     try:
         if session.query(Theatre).count() == 0:
             seed(session)
+        seed_cost_stores_if_empty(session)
     finally:
         session.close()
 
@@ -44,12 +67,14 @@ def _segment_row(segment: Segment) -> dict:
         "id": segment.id,
         "slug": segment.slug,
         "label": segment.label,
+        "short_label": table_label_for_slug(segment.slug),
         "return_rate": segment.return_rate,
         "visits_per_year": segment.visits_per_year,
         "top_genre": segment.top_genre,
         "peak_month": segment.peak_month,
         "member_count": segment.member_count,
         "formula": "return_rate = share of members with a repeat visit within 90 days",
+        "target_group": segment.label,
     }
 
 
@@ -78,9 +103,29 @@ class DecisionIn(BaseModel):
     edited_action: Optional[str] = None
 
 
+class MarketingBudgetIn(BaseModel):
+    monthly_spend: int
+    active_months: list[int]
+
+
+class OtherCostIn(BaseModel):
+    amount_gbp: int
+
+
+def _marketing_budget_fields(session: Session, segment: Segment) -> dict:
+    session_mkt = SessionMarketing()
+    try:
+        return {"marketing_budget": read_segment_marketing(session, session_mkt, segment)}
+    finally:
+        session_mkt.close()
+
+
 @app.get("/")
 def home():
-    return FileResponse(Path(__file__).resolve().parent / "dashboard.html")
+    return FileResponse(
+        Path(__file__).resolve().parent / "dashboard.html",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/health")
@@ -88,31 +133,263 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/segments")
-def list_segments(session: Session = Depends(session_scope)):
-    segments = session.query(Segment).all()
-    rows = [_segment_row(s) for s in segments]
-    rows.sort(key=lambda r: (r["return_rate"], -r["member_count"]))
+def _segment_marketing(segment: Segment, **stats) -> dict:
+    """Slug-based profile and ideas; safe on list endpoint without loading visits."""
     return {
-        "circuit_return_rate": circuit_return_rate(segments),
+        "target_profile": target_profile(segment, **stats),
+        "campaign_suggestions": campaign_suggestions(segment),
+    }
+
+
+def _resolve_theatre(session: Session, theatre_id: Optional[int]) -> Optional[Theatre]:
+    if theatre_id is None:
+        return None
+    theatre = session.get(Theatre, theatre_id)
+    if theatre is None:
+        raise HTTPException(status_code=404, detail="Theatre not found")
+    return theatre
+
+
+def _customer_ids_at_theatre(session: Session, theatre_id: int) -> set[int]:
+    """Customers whose home site is this theatre (partition of 200, no double-count)."""
+    rows = session.query(Customer.id).filter(Customer.home_theatre_id == theatre_id).all()
+    return {row[0] for row in rows}
+
+
+def _members_for_segment(
+    session: Session, segment: Segment, theatre_id: Optional[int], load_visits: bool = False
+) -> list[Customer]:
+    query = session.query(Customer).filter(Customer.segment_id == segment.id)
+    if load_visits:
+        query = query.options(joinedload(Customer.visits))
+    members = query.all()
+    if theatre_id is None:
+        return members
+    allowed = _customer_ids_at_theatre(session, theatre_id)
+    return [customer for customer in members if customer.id in allowed]
+
+
+def _segment_row_computed(
+    session: Session, segment: Segment, theatre_id: Optional[int], today: date
+) -> dict:
+    members = _members_for_segment(session, segment, theatre_id)
+    row = _segment_row(segment)
+    if theatre_id is None:
+        return row
+    rr, vpy, top_g, peak_m = segment_stats(members, today)
+    row["return_rate"] = rr
+    row["visits_per_year"] = vpy
+    row["top_genre"] = top_g
+    row["peak_month"] = peak_m
+    row["member_count"] = len(members)
+    return row
+
+
+def _visit_mix(members: list[Customer], theatre_id: Optional[int]) -> tuple[dict, dict]:
+    genres: dict = {}
+    months: dict = {}
+    for customer in members:
+        for visit in customer.visits:
+            if theatre_id is not None and visit.theatre_id != theatre_id:
+                continue
+            genres[visit.genre] = genres.get(visit.genre, 0) + 1
+            months[visit.visited_on.month] = months.get(visit.visited_on.month, 0) + 1
+    return genres, months
+
+
+@app.get("/customers/map")
+def customers_map(
+    session: Session = Depends(session_scope),
+    theatre_id: Optional[int] = Query(None),
+):
+    _resolve_theatre(session, theatre_id)
+    allowed = _customer_ids_at_theatre(session, theatre_id) if theatre_id else None
+    rows = (
+        session.query(Customer)
+        .options(joinedload(Customer.segment))
+        .order_by(Customer.id)
+        .all()
+    )
+    points = []
+    for customer in rows:
+        if allowed is not None and customer.id not in allowed:
+            continue
+        seg = customer.segment
+        points.append(
+            {
+                "code": customer.code,
+                "borough": customer.borough,
+                "postcode": customer.postcode,
+                "lat": customer.lat,
+                "lng": customer.lng,
+                "segment_id": customer.segment_id,
+                "segment_slug": seg.slug if seg else None,
+                "segment_label": seg.label if seg else None,
+            }
+        )
+    payload = {"count": len(points), "city": "London", "points": points}
+    if theatre_id is not None:
+        theatre = session.get(Theatre, theatre_id)
+        payload["theatre_id"] = theatre_id
+        payload["theatre_name"] = theatre.name if theatre else None
+    return payload
+
+
+@app.get("/costs/table")
+def costs_table(
+    session: Session = Depends(session_scope),
+    mode: str = Query("all"),
+    theatre_id: Optional[int] = Query(None),
+):
+    if mode not in ("all", "compare", "site"):
+        raise HTTPException(status_code=400, detail="mode must be all, compare, or site")
+    if mode == "site":
+        if theatre_id is None:
+            raise HTTPException(status_code=400, detail="theatre_id required for site mode")
+        _resolve_theatre(session, theatre_id)
+    try:
+        return build_cost_table(session, mode, theatre_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.patch("/costs/marketing/{segment_id}")
+def patch_marketing_budget(
+    segment_id: int,
+    incoming: MarketingBudgetIn,
+    session: Session = Depends(session_scope),
+):
+    segment = session.get(Segment, segment_id)
+    if segment is None:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    session_mkt = SessionMarketing()
+    try:
+        upsert_segment_marketing(
+            session_mkt,
+            segment_id,
+            incoming.monthly_spend,
+            incoming.active_months,
+        )
+        budget = read_segment_marketing(session, session_mkt, segment)
+    finally:
+        session_mkt.close()
+    return {"ok": True, "marketing_budget": budget}
+
+
+@app.patch("/costs/other/{theatre_id}")
+def patch_other_cost(
+    theatre_id: int,
+    incoming: OtherCostIn,
+    session: Session = Depends(session_scope),
+):
+    _resolve_theatre(session, theatre_id)
+    period_keys = [m["key"] for m in future_month_keys(12)]
+    session_other = SessionOther()
+    try:
+        upsert_other_monthly(session_other, theatre_id, period_keys, incoming.amount_gbp)
+    finally:
+        session_other.close()
+    return {"ok": True, "theatre_id": theatre_id, "amount_gbp": incoming.amount_gbp}
+
+
+@app.get("/theatres/map")
+def theatres_map(session: Session = Depends(session_scope)):
+    rows = session.query(Theatre).order_by(Theatre.id).all()
+    sites = [
+        {
+            "id": t.id,
+            "name": t.name,
+            "borough": t.borough,
+            "address": t.address,
+            "postcode": t.postcode,
+            "city": t.city,
+            "lat": t.lat,
+            "lng": t.lng,
+            "screen_count": t.screen_count,
+            "seat_capacity": t.seat_capacity,
+        }
+        for t in rows
+    ]
+    return {"count": len(sites), "city": "London", "theatres": sites}
+
+
+@app.get("/segments")
+def list_segments(
+    session: Session = Depends(session_scope),
+    theatre_id: Optional[int] = Query(None),
+):
+    _resolve_theatre(session, theatre_id)
+    today = date.today()
+    segments = session.query(Segment).all()
+    rows = []
+    for s in segments:
+        row = _segment_row_computed(session, s, theatre_id, today)
+        stats = {}
+        if theatre_id is not None:
+            members = _members_for_segment(session, s, theatre_id)
+            stats = {
+                "return_rate": row["return_rate"],
+                "visits_per_year": row["visits_per_year"],
+                "top_genre": row["top_genre"],
+                "peak_month": row["peak_month"],
+                "members": row["member_count"],
+            }
+        row.update(_segment_marketing(s, **stats))
+        row.update(_marketing_budget_fields(session, s))
+        rows.append(row)
+    rows.sort(key=lambda r: (r["return_rate"], -r["member_count"]))
+    if theatre_id is None:
+        circuit_rr = circuit_return_rate(segments)
+    else:
+        total = sum(r["member_count"] for r in rows)
+        circuit_rr = (
+            round(sum(r["return_rate"] * r["member_count"] for r in rows) / total, 3) if total else 0.0
+        )
+    theatre = session.get(Theatre, theatre_id) if theatre_id else None
+    segment_total = sum(r["member_count"] for r in rows)
+    if theatre_id is None:
+        customers_n = session.query(Customer).count()
+    else:
+        customers_n = segment_total
+    return {
+        "circuit_return_rate": circuit_rr,
         "theatre_count": session.query(Theatre).count(),
+        "theatre_id": theatre_id,
+        "theatre_name": theatre.name if theatre else None,
+        "customer_count": customers_n,
         "segments": rows,
     }
 
 
 @app.get("/segments/{segment_id}")
-def segment_detail(segment_id: int, session: Session = Depends(session_scope)):
+def segment_detail(
+    segment_id: int,
+    session: Session = Depends(session_scope),
+    theatre_id: Optional[int] = Query(None),
+):
+    _resolve_theatre(session, theatre_id)
+    today = date.today()
     segment = _one_segment(session, segment_id)
-    body = _segment_row(segment)
-    genres = {}
-    months = {}
-    for customer in segment.customers:
-        for visit in customer.visits:
-            genres[visit.genre] = genres.get(visit.genre, 0) + 1
-            months[visit.visited_on.month] = months.get(visit.visited_on.month, 0) + 1
-    body["segment_rule"] = rule_for_slug(segment.slug)
+    body = _segment_row_computed(session, segment, theatre_id, today)
+    members = _members_for_segment(session, segment, theatre_id, load_visits=True)
+    genres, months = _visit_mix(members, theatre_id)
+    stats = {}
+    if theatre_id is not None:
+        stats = {
+            "return_rate": body["return_rate"],
+            "visits_per_year": body["visits_per_year"],
+            "top_genre": body["top_genre"],
+            "peak_month": body["peak_month"],
+            "members": body["member_count"],
+        }
+    body.update(_segment_marketing(segment, **stats))
+    body.update(_marketing_budget_fields(session, segment))
     body["genre_counts"] = genres
     body["month_counts"] = months
+    if theatre_id is not None:
+        body["theatre_id"] = theatre_id
+        theatre = session.get(Theatre, theatre_id)
+        body["theatre_name"] = theatre.name if theatre else None
     body["campaigns"] = [
         {
             "id": c.id,
@@ -128,19 +405,37 @@ def segment_detail(segment_id: int, session: Session = Depends(session_scope)):
 
 
 @app.get("/segments/{segment_id}/evidence")
-def segment_evidence(segment_id: int, session: Session = Depends(session_scope)):
+def segment_evidence(
+    segment_id: int,
+    session: Session = Depends(session_scope),
+    theatre_id: Optional[int] = Query(None),
+):
+    _resolve_theatre(session, theatre_id)
+    today = date.today()
     segment = _one_segment(session, segment_id)
+    body = _segment_row_computed(session, segment, theatre_id, today)
+    stats = {}
+    if theatre_id is not None:
+        stats = {
+            "return_rate": body["return_rate"],
+            "visits_per_year": body["visits_per_year"],
+            "top_genre": body["top_genre"],
+            "peak_month": body["peak_month"],
+            "members": body["member_count"],
+        }
     campaign = segment.campaigns[-1] if segment.campaigns else None
     return {
         "segment": segment.label,
         "slug": segment.slug,
-        "rule": rule_for_slug(segment.slug),
-        "return_rate": segment.return_rate,
+        "target_profile": target_profile(segment, **stats),
+        "campaign_suggestions": campaign_suggestions(segment),
+        "return_rate": body["return_rate"],
         "circuit_return_rate": circuit_return_rate(session.query(Segment).all()),
-        "visits_per_year": segment.visits_per_year,
-        "top_genre": segment.top_genre,
-        "peak_month": segment.peak_month,
-        "member_count": segment.member_count,
+        "visits_per_year": body["visits_per_year"],
+        "top_genre": body["top_genre"],
+        "peak_month": body["peak_month"],
+        "member_count": body["member_count"],
+        "theatre_id": theatre_id,
         "campaign": None
         if campaign is None
         else {
@@ -176,10 +471,10 @@ def add_visit(incoming: VisitIn, session: Session = Depends(session_scope)):
 
 
 def _refresh_customer_segment(session, customer, today):
-    slug = assign_segment(customer.visits, today)
+    slug = assign_segment(customer.visits, today, customer.age)
     segment = session.query(Segment).filter(Segment.slug == slug).first()
     if segment is None:
-        segment = session.query(Segment).filter(Segment.slug == "steady_mixed").first()
+        segment = session.query(Segment).filter(Segment.slug == "age_adults").first()
     customer.segment_id = segment.id if segment else None
     session.flush()
     if segment:

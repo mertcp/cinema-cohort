@@ -1,6 +1,6 @@
 # Cinema cohort demo
 
-Synthetic **North Star Cinemas** ticket rows → **return rates**, **segments**, **genre/month patterns** → draft **campaign** lines.
+Synthetic **Lynch Boulevard Cinemas** ticket rows → **return rates**, **segments**, **genre/month patterns** → draft **campaign** lines.
 
 ## Run
 

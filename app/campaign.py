@@ -1,4 +1,4 @@
-"""Draft a campaign line from segment stats. LLM optional."""
+"""Campaign ideas aligned to age-based cinema audiences and family outings."""
 
 from __future__ import annotations
 
@@ -7,55 +7,161 @@ import os
 import urllib.error
 import urllib.request
 
-MONTHS = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+from app.segments import target_profile
+
+SUGGESTIONS = {
+    "age_kids": [
+        (
+            "Kids club: stamp card → free popcorn after 3 animation matinees.",
+            "in-venue + email",
+            0.07,
+            "Year-round · Jul–Aug & school breaks (Feb, Apr, Oct half-term, Dec)",
+        ),
+        (
+            "Holiday morning screening + activity sheet for PG animation.",
+            "social + poster",
+            0.06,
+            "Jul–Aug summer break · late Oct half-term · mid-Dec",
+        ),
+        (
+            "Parent email: next school-break matinee times for top kid title.",
+            "email",
+            0.05,
+            "1 week before each break · Sat/Sun matinee slots",
+        ),
+    ],
+    "age_teens": [
+        (
+            "Student / teen ticket night — Fri–Sat with ID at box office.",
+            "social + in-venue",
+            0.05,
+            "Term-time Fri–Sat · spikes before holidays",
+        ),
+        (
+            "Group of 4+ discount on buzz PG-13 / 15 titles opening weekend.",
+            "app",
+            0.04,
+            "May–Aug & Nov–Dec tentpole openings",
+        ),
+        (
+            "Snap-to-win concession credit after sharing a post-film poll.",
+            "social",
+            0.03,
+            "Opening weekends year-round",
+        ),
+    ],
+    "age_young_adults": [
+        (
+            "Opening-night party screening — target groups who book Fri–Sat.",
+            "social",
+            0.05,
+            "May–Aug & Nov–Dec buzz titles · Fri–Sat opening weekends",
+        ),
+        (
+            "Friends bundle: 4 tickets for price of 3 on buzz titles.",
+            "app",
+            0.04,
+            "Opening week of tentpoles · spring/summer & holiday season",
+        ),
+        (
+            "Post-film dining partner offer (extend-the-night behaviour).",
+            "partnership",
+            0.03,
+            "Fri–Sat year-round · peak May–Aug social season",
+        ),
+    ],
+    "age_adults": [
+        (
+            "Tentpole reminder 10 days before release — occasional goers respond to event films.",
+            "email",
+            0.05,
+            "May–Aug & Nov–Dec blockbuster windows",
+        ),
+        (
+            "Midweek date-night bundle: two tickets + shared concession.",
+            "email + app",
+            0.04,
+            "Wed–Thu year-round · stronger Oct–Feb",
+        ),
+        (
+            "Dynamic ad for their last-watched genre when a similar title opens.",
+            "programmatic",
+            0.03,
+            "2 weeks before each major release in their preferred genre",
+        ),
+    ],
+    "age_seniors": [
+        (
+            "Silver screen matinee: discounted weekday slots + free tea/coffee.",
+            "in-venue + email",
+            0.06,
+            "Tue–Thu matinees · Sep–Apr (outside peak summer)",
+        ),
+        (
+            "Classic & drama season pass — four matinees at fixed price.",
+            "loyalty",
+            0.05,
+            "Jan–Mar & Sep–Nov when drama/documentary slates peak",
+        ),
+        (
+            "Coach / community group booking for morning screenings.",
+            "partnership",
+            0.04,
+            "Spring & autumn shoulder months",
+        ),
+    ],
+    "family_moviegoing": [
+        (
+            "School-holiday matinee bundle + kids meal (family motivators).",
+            "email + in-venue",
+            0.08,
+            "School breaks · Feb, Easter, Jul–Aug, Oct half-term · Dec",
+        ),
+        (
+            "Saturday morning family slot advertised 2 weeks before holiday.",
+            "social",
+            0.06,
+            "Start ads 2 weeks before each break · Sat/Sun matinees",
+        ),
+        (
+            "Parent newsletter: next animation release + kid-friendly showtimes.",
+            "email",
+            0.05,
+            "Nov–Dec animation season · summer family releases (Jul–Aug)",
+        ),
+    ],
+}
+
+
+def campaign_suggestions(segment):
+    rows = SUGGESTIONS.get(segment.slug, SUGGESTIONS["age_adults"])
+    month_names = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    peak = segment.peak_month
+    data_peak = month_names[peak] if 0 < peak < 13 else ""
+    out = []
+    for text, channel, lift, season in rows:
+        item = {
+            "action": text,
+            "channel": channel,
+            "expected_lift": lift,
+            "season_focus": season,
+        }
+        if data_peak and not out:
+            item["data_peak_month"] = data_peak
+        out.append(item)
+    return out
 
 
 def brief(segment):
-    return {
-        "segment": segment.label,
-        "return_rate": segment.return_rate,
-        "visits_per_year": segment.visits_per_year,
-        "top_genre": segment.top_genre,
-        "peak_month": MONTHS[segment.peak_month] if 0 < segment.peak_month < 13 else "",
-        "members": segment.member_count,
-    }
+    body = target_profile(segment)
+    body["slug"] = segment.slug
+    return body
 
 
 def draft_from_rules(segment):
-    month = MONTHS[segment.peak_month] if 0 < segment.peak_month < 13 else "peak month"
-    if segment.slug == "lapsed_family":
-        return (
-            "Target {0}: Saturday matinee bundle, animation + kid meal — push in November before {1} peak.".format(
-                segment.label, month
-            ),
-            "email + social",
-            0.08,
-            0.78,
-        )
-    if segment.slug == "horror_autumn":
-        return (
-            "Target {0}: horror festival trailer and {1} night offer — double feature for returning fans.".format(
-                segment.label, month
-            ),
-            "in-app + poster",
-            0.06,
-            0.72,
-        )
-    if segment.slug == "at_risk":
-        return (
-            "Win-back {0}: two-for-one drama or comedy, limit to members inactive 120+ days.".format(segment.label),
-            "email",
-            0.05,
-            0.65,
-        )
-    return (
-        "Maintain {0}: genre-led previews for {1} lovers ahead of {2}.".format(
-            segment.label, segment.top_genre, month
-        ),
-        "social",
-        0.03,
-        0.55,
-    )
+    options = campaign_suggestions(segment)
+    first = options[0]
+    return first["action"], first["channel"], first["expected_lift"], 0.75
 
 
 def draft_from_llm(segment):
@@ -70,7 +176,7 @@ def draft_from_llm(segment):
             {
                 "role": "system",
                 "content": (
-                    "You propose cinema marketing campaigns from segment stats. "
+                    "You propose one cinema marketing campaign for an age-based or family target group. "
                     "Reply JSON: action, channel, expected_lift, confidence."
                 ),
             },

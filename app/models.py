@@ -17,6 +17,13 @@ class Theatre(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(80))
     city: Mapped[str] = mapped_column(String(48))
+    borough: Mapped[str] = mapped_column(String(48), default="")
+    address: Mapped[str] = mapped_column(String(120), default="")
+    postcode: Mapped[str] = mapped_column(String(12), default="")
+    lat: Mapped[float] = mapped_column(Float, default=51.5074)
+    lng: Mapped[float] = mapped_column(Float, default=-0.1278)
+    screen_count: Mapped[int] = mapped_column(Integer, default=8)
+    seat_capacity: Mapped[int] = mapped_column(Integer, default=1200)
 
     visits: Mapped[list["Visit"]] = relationship(back_populates="theatre")
 
@@ -42,9 +49,16 @@ class Customer(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     code: Mapped[str] = mapped_column(String(16), unique=True)
+    borough: Mapped[str] = mapped_column(String(48), default="")
+    postcode: Mapped[str] = mapped_column(String(12), default="")
+    lat: Mapped[float] = mapped_column(Float, default=51.5074)
+    lng: Mapped[float] = mapped_column(Float, default=-0.1278)
+    age: Mapped[int] = mapped_column(Integer, default=35)
+    home_theatre_id: Mapped[Optional[int]] = mapped_column(ForeignKey("theatres.id"), nullable=True)
     segment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("segments.id"), nullable=True)
 
     segment: Mapped[Optional[Segment]] = relationship(back_populates="customers")
+    home_theatre: Mapped[Optional[Theatre]] = relationship(foreign_keys=[home_theatre_id])
     visits: Mapped[list["Visit"]] = relationship(back_populates="customer")
 
 
